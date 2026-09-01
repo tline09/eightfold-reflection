@@ -1,0 +1,1113 @@
+<!DOCTYPE html>
+<!--
+  ============================================================================
+  The Noble Eightfold Path — Reflection Dashboard
+  ============================================================================
+  A single-file reflection tool. Rate how consciously you live each of the
+  eight factors of the Path (scale 1–5), add a note, and revisit over time.
+  Charts visualise a single session and the trend across sessions; a PDF
+  export produces a laid-out report or a full-year archive.
+
+  Design goals:
+    - Single file, no build step. Two CDN dependencies: Chart.js (charts) and
+      jsPDF (PDF export). Remove those <script> tags plus the chart/PDF code
+      to run fully offline with rating, notes and history only.
+    - Data is stored locally in the browser (localStorage). Nothing is sent
+      anywhere; there is no server and no tracking. Export/import as JSON,
+      or "reset everything" to clear and start fresh.
+    - Ships with one empty starter session; the first real session replaces
+      it automatically.
+    - Bilingual (German default, English via the top-right toggle): factors,
+      questions, intro and written review all switch. User notes are never
+      translated. Code, comments and the README are English.
+    - Responsive: full-width buttons, larger touch targets and shortened
+      radar labels on small screens. PDF keeps the full labels.
+
+  Structure:
+    1. <style>      — self-contained theme (:root custom properties) + a
+                      max-width:600px block with the mobile adaptations.
+    2. <header>     — language toggle, Dharmachakra (eight spokes), overall
+                      average, and the "how long since last session" reminder.
+    3. .intro       — what the tool is for and how to use it.
+    4. controls     — session selector + add / export / import / delete /
+                      PDF (session) / PDF (whole year) / reset.
+    5. entry form   — hidden until "new session"; one 1–5 scale per factor.
+    6. radar chart  — the eight factors of the selected session.
+    7. detail list  — score, question, note and change vs previous session;
+                      tap a row for that factor's full note history (modal).
+    8. trend chart  — overall average across all sessions (2+ sessions).
+    9. review        — rule-based written summary (offline, no AI).
+   10. modal        — per-factor note history overlay.
+   11. <script>     — i18n dictionary, data model, persistence, rendering,
+                      charts, PDF generation, language switch.
+
+  Data model (one object per session):
+    { date: "YYYY-MM-DD", scores: number[8] (1–5), notes: string[8] }
+  Factor order is fixed and defined in GLIEDER; scores/notes align by index.
+  UI strings live in the T dictionary (T.de / T.en).
+  ============================================================================
+-->
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Achtfacher Pfad · Reflexion</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<style>
+:root{
+  --ink:#2b2b28;
+  --ink-soft:#6b6a62;
+  --paper:#f2efe6;
+  --paper-2:#e9e5d8;
+  --line:#cfc9b8;
+  --gold:#a8894e;
+  --gold-soft:#c9b487;
+  --weisheit:#6a7f6d;
+  --ethik:#8a6d5a;
+  --geist:#5f708a;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{scroll-behavior:smooth}
+body{
+  background:var(--paper);
+  color:var(--ink);
+  font-family:Georgia,'Iowan Old Style',serif;
+  line-height:1.6;
+  padding:0 0 5rem;
+}
+.wrap{max-width:920px;margin:0 auto;padding:0 1.4rem}
+
+/* Hero */
+header{
+  text-align:center;
+  padding:4.5rem 1.4rem 2.5rem;
+  border-bottom:1px solid var(--line);
+  position:relative;
+}
+.langsw{position:absolute;top:1.2rem;right:1.2rem;display:flex;gap:.2rem;
+  border:1px solid var(--line);border-radius:2px;overflow:hidden}
+.langsw button{font-family:inherit;font-size:.8rem;letter-spacing:.05em;
+  padding:.35rem .7rem;border:none;background:var(--paper-2);color:var(--ink-soft);cursor:pointer}
+.langsw button.active{background:var(--gold);color:#fff}
+.wheel{width:96px;height:96px;margin:0 auto 1.6rem;display:block}
+.wheel circle,.wheel line{stroke:var(--gold);fill:none;stroke-width:1.4}
+h1{font-size:2.35rem;font-weight:normal;letter-spacing:.01em;margin-bottom:.4rem}
+.pali{font-style:italic;color:var(--gold);font-size:1.05rem;letter-spacing:.04em}
+.sub{color:var(--ink-soft);margin-top:1rem;font-size:.98rem}
+
+/* Overall figure */
+.overall{
+  display:flex;justify-content:center;align-items:baseline;gap:1rem;
+  margin:2.6rem 0 1rem;
+}
+.overall .num{font-size:4.2rem;line-height:1;color:var(--ink)}
+.overall .of{font-size:1.4rem;color:var(--ink-soft)}
+.overall .lbl{color:var(--ink-soft);font-size:.9rem}
+
+section{padding:2.8rem 0;border-bottom:1px solid var(--line)}
+h2{font-size:1.35rem;font-weight:normal;margin-bottom:.3rem}
+.section-note{color:var(--ink-soft);font-size:.92rem;margin-bottom:1.6rem}
+.intro p{margin-bottom:1rem;max-width:68ch}
+.intro .how{background:var(--paper-2);border:1px solid var(--line);border-left:3px solid var(--gold);
+  padding:1.3rem 1.6rem;border-radius:2px;margin-top:1.6rem}
+.intro .how h3{font-weight:normal;font-size:1.05rem;margin-bottom:.7rem}
+.intro .how ol{margin:0;padding-left:1.2rem}
+.intro .how li{margin-bottom:.5rem;padding-left:.3rem}
+.intro .how li:last-child{margin-bottom:0}
+
+.chart-box{background:var(--paper-2);border:1px solid var(--line);padding:1.6rem;border-radius:2px}
+.chart-radar{max-width:520px;margin:0 auto}
+
+/* Glied rows */
+.glied{display:flex;gap:1rem;padding:1.1rem 0;border-bottom:1px dotted var(--line);align-items:flex-start}
+.glied:last-child{border-bottom:none}
+.g-score{
+  flex:0 0 44px;height:44px;border-radius:50%;
+  display:flex;align-items:center;justify-content:center;
+  font-size:1.25rem;color:#fff;margin-top:.1rem;
+}
+.g-body{flex:1}
+.g-name{font-size:1.05rem}
+.g-pali{font-style:italic;color:var(--gold);font-size:.85rem;margin-left:.4rem}
+.g-question{color:var(--ink);font-size:.92rem;margin:.35rem 0 .1rem;font-style:italic;opacity:.85}
+.fq{color:var(--ink-soft);font-size:.88rem;font-style:italic;margin:.15rem 0 .5rem}
+.g-bar{height:6px;background:var(--paper-2);border-radius:3px;margin:.5rem 0;overflow:hidden}
+.g-bar span{display:block;height:100%;border-radius:3px}
+.g-note{color:var(--ink-soft);font-size:.92rem}
+.g-delta{font-size:.82rem;margin-left:.5rem}
+.up{color:var(--weisheit)}.down{color:#b0553f}.same{color:var(--ink-soft)}
+
+.grouplabel{font-size:.78rem;letter-spacing:.14em;color:var(--ink-soft);
+  text-transform:uppercase;margin:1.6rem 0 .2rem}
+.grouplabel:first-of-type{margin-top:0}
+
+/* Controls */
+.controls{display:flex;gap:.7rem;flex-wrap:wrap;align-items:center;margin-bottom:1.4rem}
+select,button{
+  font-family:inherit;font-size:.95rem;padding:.5rem .9rem;
+  border:1px solid var(--line);background:var(--paper-2);color:var(--ink);
+  border-radius:2px;cursor:pointer;
+}
+button.primary{background:var(--gold);color:#fff;border-color:var(--gold)}
+button:hover{border-color:var(--gold)}
+
+/* Entry form */
+.form{background:var(--paper-2);border:1px solid var(--line);padding:1.6rem;border-radius:2px;display:none}
+.form.open{display:block}
+.form h3{font-weight:normal;margin-bottom:1rem}
+.frow{padding:.8rem 0;border-bottom:1px dotted var(--line)}
+.frow:last-of-type{border-bottom:none}
+.frow label{display:block;font-size:.98rem;margin-bottom:.4rem}
+.frow .fp{font-style:italic;color:var(--gold);font-size:.82rem}
+.scale{display:flex;gap:.4rem;margin:.3rem 0 .5rem}
+.scale button{width:38px;height:38px;padding:0;border-radius:50%}
+.scale button.sel{background:var(--gold);color:#fff;border-color:var(--gold)}
+textarea{width:100%;font-family:inherit;font-size:.92rem;padding:.6rem;
+  border:1px solid var(--line);border-radius:2px;background:var(--paper);resize:vertical;min-height:44px}
+.fdate{margin:.6rem 0 1.2rem}
+.fdate input{font-family:inherit;padding:.5rem;border:1px solid var(--line);border-radius:2px;background:var(--paper)}
+.formactions{display:flex;gap:.7rem;margin-top:1.2rem}
+.empty{color:var(--ink-soft);text-align:center;padding:2rem;font-style:italic}
+.foot{text-align:center;color:var(--ink-soft);font-size:.85rem;padding-top:2.5rem;font-style:italic}
+
+/* Gentle reminder banner */
+.reminder{background:var(--paper-2);border:1px solid var(--gold-soft);border-left:3px solid var(--gold);
+  padding:.8rem 1.1rem;border-radius:2px;margin-top:2rem;color:var(--ink);font-size:.92rem}
+.reminder em{color:var(--gold);font-style:normal}
+
+/* Detail rows become tappable for the note history */
+.glied{cursor:pointer;transition:background .15s}
+.glied:hover{background:var(--paper-2)}
+.g-hint{font-size:.78rem;color:var(--gold);margin-top:.3rem;opacity:0;transition:opacity .15s}
+.glied:hover .g-hint{opacity:1}
+
+/* Note-history modal */
+.overlay{position:fixed;inset:0;background:rgba(43,43,40,.55);display:none;
+  align-items:center;justify-content:center;padding:1.2rem;z-index:50}
+.overlay.open{display:flex}
+.modal{background:var(--paper);max-width:640px;width:100%;max-height:85vh;overflow:auto;
+  border-radius:3px;padding:2rem;border-top:4px solid var(--gold)}
+.modal h3{font-weight:normal;font-size:1.3rem;margin-bottom:.2rem}
+.modal .mpali{font-style:italic;color:var(--gold);font-size:.9rem;margin-bottom:1.2rem}
+.modal .mq{font-style:italic;color:var(--ink-soft);font-size:.92rem;margin-bottom:1.4rem;
+  padding-bottom:1.2rem;border-bottom:1px solid var(--line)}
+.hist{display:flex;gap:1rem;padding:.9rem 0;border-bottom:1px dotted var(--line)}
+.hist:last-child{border-bottom:none}
+.hist-date{flex:0 0 84px;color:var(--ink-soft);font-size:.85rem}
+.hist-score{flex:0 0 30px;height:30px;border-radius:50%;color:#fff;
+  display:flex;align-items:center;justify-content:center;font-size:.95rem}
+.hist-note{flex:1;font-size:.92rem}
+.modal .close{margin-top:1.4rem}
+
+/* Year-end reflection summary */
+.summary-box{background:var(--paper-2);border:1px solid var(--line);border-left:3px solid var(--gold);
+  padding:1.6rem 1.8rem;border-radius:2px}
+.summary-box p{margin-bottom:.9rem;max-width:70ch}
+.summary-box p:last-child{margin-bottom:0}
+.summary-box strong{color:var(--gold);font-weight:normal;font-style:italic}
+
+/* Print / PDF: hide interactive chrome, keep the reflection content */
+@media print{
+  body{background:#fff;color:#000;padding:0}
+  .controls,.form,.reminder,#printBtn,.g-hint,.overlay,#trendSec .section-note{display:none!important}
+  header{border-bottom:1px solid #999;padding-top:1rem}
+  section{border-bottom:1px solid #ccc;page-break-inside:avoid}
+  .chart-box{border:1px solid #ccc}
+  .glied{cursor:default}
+  a[href]:after{content:""}
+}
+@media(max-width:600px){
+  h1{font-size:1.9rem}
+  .overall .num{font-size:3.2rem}
+  .hist-date{flex-basis:64px}
+  /* Buttons span the row and are comfortably tappable */
+  .controls{gap:.5rem}
+  .controls button{flex:1 1 100%; padding:.7rem 1rem; font-size:1rem}
+  .controls select{flex:1 1 100%; padding:.6rem; font-size:1rem}
+  .controls label{flex:1 1 100%}
+  .formactions button{flex:1 1 100%; padding:.7rem 1rem; font-size:1rem}
+  /* Rating buttons: bigger circular touch targets, evenly spread */
+  .scale{gap:.5rem; justify-content:space-between}
+  .scale button{width:44px; height:44px; font-size:1rem}
+  /* Note-history modal fills the small screen tidily */
+  .overlay{padding:0; align-items:flex-end}
+  .modal{max-height:90vh; border-radius:14px 14px 0 0; padding:1.5rem}
+  .modal .close{width:100%; padding:.7rem}
+  /* A touch more breathing room in the intro checklist */
+  .intro .how{padding:1.2rem 1.3rem}
+}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="langsw" id="langsw">
+    <button data-lang="de" class="active">DE</button>
+    <button data-lang="en">EN</button>
+  </div>
+  <svg class="wheel" viewBox="0 0 100 100" aria-label="Dharmachakra – wheel with eight spokes" role="img">
+    <circle cx="50" cy="50" r="47"/>
+    <circle cx="50" cy="50" r="40"/>
+    <circle cx="50" cy="50" r="9"/>
+    <g id="spokes"></g>
+  </svg>
+  <h1 data-i18n="title">Der Achtfache Pfad im Alltag</h1>
+  <div class="pali">Ariya Aṭṭhaṅgika Magga</div>
+  <p class="sub" data-i18n="sub">Eine freundliche Standortbestimmung – 1 = trifft kaum zu · 5 = lebe ich bewusst</p>
+  <div class="overall">
+    <div><span class="num" id="ovNum">–</span><span class="of"> / 5</span>
+      <div class="lbl"><span data-i18n="ovLabel">Gesamtdurchschnitt</span> <span id="ovDate"></span></div></div>
+  </div>
+</header>
+
+<div class="wrap">
+
+  <div id="reminder" class="reminder" style="display:none"></div>
+
+  <section class="intro">
+    <h2 data-i18n="introH">Worum es hier geht</h2>
+    <p data-i18n="introP1">Der Achtfache Pfad ist die buddhistische Beschreibung von acht Bereichen des Lebens, an denen man üben kann – von der inneren Haltung über das Sprechen und Handeln bis zur Meditation. Dieses Werkzeug ist kein Test und keine Prüfung. Es ist ein ruhiger Spiegel: Du schätzt für jeden der acht Bereiche ein, wie bewusst du ihn derzeit lebst, und hältst in einer Notiz fest, was dir dazu durch den Kopf geht.</p>
+    <p data-i18n="introP2">Der Sinn liegt in der Wiederholung. Ein einzelner Durchgang zeigt eine Momentaufnahme; mehrere über das Jahr verteilt zeigen eine Richtung. Am Jahresende siehst du im Verlauf, wo du gewachsen bist und wo noch Raum liegt – ohne Wertung, als freundliche Standortbestimmung.</p>
+    <div class="how">
+      <h3 data-i18n="howH">So gehst du vor</h3>
+      <ol>
+        <li data-i18n="how1">Nimm dir ein paar ruhige Minuten und lies jede der acht Fragen in Ruhe.</li>
+        <li data-i18n="how2">Schätze auf einer Skala von 1 bis 5 ein: 1 = trifft (noch) kaum zu, 5 = lebe ich sehr bewusst und regelmässig.</li>
+        <li data-i18n="how3">Halte in der Notiz kurz fest, warum – das macht den späteren Rückblick wertvoll.</li>
+        <li data-i18n="how4">Wiederhole das alle paar Wochen oder Monate. Der Verlauf entsteht von selbst.</li>
+      </ol>
+    </div>
+  </section>
+
+  <section>
+    <div class="controls">
+      <label for="runsel" style="color:var(--ink-soft);font-size:.92rem" data-i18n="runLabel">Durchgang</label>
+      <select id="runsel"></select>
+      <button class="primary" id="addBtn" data-i18n="add">+ Neuer Durchgang</button>
+      <button id="exportBtn" data-i18n="exp">Sicherung exportieren</button>
+      <button id="importBtn" data-i18n="imp">Sicherung laden</button>
+      <input type="file" id="importFile" accept="application/json" style="display:none">
+      <button id="delBtn" data-i18n="del">Durchgang löschen</button>
+      <button id="printBtn" data-i18n="pdf">Als PDF speichern</button>
+      <button id="printAllBtn" data-i18n="pdfAll">Ganzes Jahr als PDF</button>
+      <button id="resetBtn" data-i18n="reset">Alles zurücksetzen</button>
+    </div>
+
+    <div class="form" id="form">
+      <h3 data-i18n="formH">Neuer Durchgang</h3>
+      <div class="fdate"><label style="font-size:.9rem;color:var(--ink-soft)" data-i18n="dateL">Datum</label><br>
+        <input type="date" id="fdate"></div>
+      <div id="fquestions"></div>
+      <div class="formactions">
+        <button class="primary" id="saveBtn" data-i18n="save">Speichern</button>
+        <button id="cancelBtn" data-i18n="cancel">Abbrechen</button>
+      </div>
+    </div>
+  </section>
+
+  <section id="radarSec">
+    <h2 data-i18n="radarH">Die acht Glieder auf einen Blick</h2>
+    <p class="section-note" data-i18n="radarN">Je weiter aussen, desto bewusster gelebt. So siehst du sofort, wo Gleichgewicht ist und wo noch Raum.</p>
+    <div class="chart-box chart-radar"><canvas id="radar"></canvas></div>
+  </section>
+
+  <section id="detailSec">
+    <h2 data-i18n="detailH">Im Einzelnen</h2>
+    <p class="section-note" data-i18n="detailN">Deine Einschätzung und Notiz zu jedem Glied. Die Veränderung bezieht sich auf den vorigen Durchgang.</p>
+    <div id="glieder"></div>
+  </section>
+
+  <section id="trendSec">
+    <h2 data-i18n="trendH">Verlauf über die Zeit</h2>
+    <p class="section-note" data-i18n="trendN">Sichtbar, sobald mehr als ein Durchgang vorliegt – ideal für den Rückblick am Jahresende.</p>
+    <div class="chart-box"><canvas id="trend"></canvas></div>
+  </section>
+
+  <section id="summarySec">
+    <h2 data-i18n="sumH">Rückblick</h2>
+    <p class="section-note" data-i18n="sumN">Eine ruhige Zusammenfassung deiner bisherigen Durchgänge – für den Blick aufs grosse Ganze.</p>
+    <div class="summary-box" id="summary"></div>
+  </section>
+
+  <p class="foot"><span data-i18n="foot1">Es geht nicht um Bewertung, sondern um ehrliche, freundliche Standortbestimmung.</span><br>
+  <span data-i18n="foot2">Der Weg zur Befreiung vom Leiden.</span></p>
+</div>
+
+<!-- Note-history modal: shows every past note for one factor -->
+<div class="overlay" id="overlay">
+  <div class="modal" id="modal">
+    <h3 id="mTitle"></h3>
+    <div class="mpali" id="mPali"></div>
+    <div class="mq" id="mQ"></div>
+    <div id="mHist"></div>
+    <button class="close" id="mClose">Schliessen</button>
+  </div>
+</div>
+
+<script>
+/* The eight factors, in canonical order. Bilingual fields:
+   nDe/nEn = name, gDe/gEn = group, qDe/qEn = reflection question.
+   p = Pali term, c = colour key (see COL). Notes are never translated. */
+const GLIEDER=[
+ {gDe:"Weisheit",gEn:"Wisdom",nDe:"1. Rechte Ansicht",nEn:"1. Right View",p:"Sammā diṭṭhi",c:"weisheit",
+  qDe:"Verstehe ich, dass all mein Handeln – Gedanken, Worte, Taten – Folgen hat, und dass Leid aus Anhaften, Unwissenheit und Abwehr entsteht?",
+  qEn:"Do I understand that all my actions – thoughts, words, deeds – have consequences, and that suffering arises from attachment, ignorance and aversion?"},
+ {gDe:"Weisheit",gEn:"Wisdom",nDe:"2. Rechte Absicht",nEn:"2. Right Intention",p:"Sammā saṅkappa",c:"weisheit",
+  qDe:"Sind meine Absichten im Alltag von Mitgefühl, Güte und Loslassen geprägt – statt von Gier, Ärger oder Egoismus?",
+  qEn:"Are my everyday intentions shaped by compassion, kindness and letting go – rather than greed, anger or self-interest?"},
+ {gDe:"Ethisches Verhalten",gEn:"Ethical Conduct",nDe:"3. Rechte Rede",nEn:"3. Right Speech",p:"Sammā vācā",c:"ethik",
+  qDe:"Spreche ich ehrlich, freundlich, hilfreich und achtsam – und vermeide ich Klatsch, Lüge und verletzende Worte?",
+  qEn:"Do I speak honestly, kindly, helpfully and mindfully – avoiding gossip, lies and hurtful words?"},
+ {gDe:"Ethisches Verhalten",gEn:"Ethical Conduct",nDe:"4. Rechtes Handeln",nEn:"4. Right Action",p:"Sammā kammanta",c:"ethik",
+  qDe:"Handle ich so, dass ich niemandem bewusst schade – weder Menschen, Tieren noch mir selbst?",
+  qEn:"Do I act so as to knowingly harm no one – neither people, animals, nor myself?"},
+ {gDe:"Ethisches Verhalten",gEn:"Ethical Conduct",nDe:"5. Rechter Lebenserwerb",nEn:"5. Right Livelihood",p:"Sammā ājīva",c:"ethik",
+  qDe:"Steht die Art, wie ich meinen Lebensunterhalt verdiene, im Einklang mit ethischen Werten – ohne Schaden und Ausbeutung?",
+  qEn:"Is the way I earn my living in keeping with ethical values – free of harm and exploitation?"},
+ {gDe:"Geistesschulung",gEn:"Mental Discipline",nDe:"6. Rechtes Bemühen",nEn:"6. Right Effort",p:"Sammā vāyāma",c:"geist",
+  qDe:"Bemühe ich mich, unheilsame Gedanken und Gewohnheiten loszulassen und heilsame Qualitäten – Geduld, Mitgefühl, Freude – zu fördern?",
+  qEn:"Do I make the effort to let go of unwholesome thoughts and habits and to cultivate wholesome qualities – patience, compassion, joy?"},
+ {gDe:"Geistesschulung",gEn:"Mental Discipline",nDe:"7. Rechte Achtsamkeit",nEn:"7. Right Mindfulness",p:"Sammā sati",c:"geist",
+  qDe:"Bin ich im Alltag gegenwärtig und bewusst bei dem, was ich tue – ohne zu verurteilen oder mich zu verlieren?",
+  qEn:"Am I present and aware in daily life with what I am doing – without judging or losing myself?"},
+ {gDe:"Geistesschulung",gEn:"Mental Discipline",nDe:"8. Rechte Sammlung",nEn:"8. Right Concentration",p:"Sammā samādhi",c:"geist",
+  qDe:"Übe ich regelmässig Meditation oder Sammlung, um den Geist zu klären und zu beruhigen?",
+  qEn:"Do I practise meditation or concentration regularly, to clear and calm the mind?"},
+];
+/* Active language and helpers to pick the right field. */
+let LANG="de";
+const gName=g=>LANG==="de"?g.nDe:g.nEn;
+const gGroup=g=>LANG==="de"?g.gDe:g.gEn;
+const gQ=g=>LANG==="de"?g.qDe:g.qEn;
+const gPlain=g=>gName(g).replace(/^\d+\.\s/,'');
+
+/* All fixed UI strings, keyed by language. Notes stay as the user wrote them. */
+const T={
+ de:{
+  title:"Der Achtfache Pfad im Alltag",
+  sub:"Eine freundliche Standortbestimmung – 1 = trifft kaum zu · 5 = lebe ich bewusst",
+  ovLabel:"Gesamtdurchschnitt",
+  introH:"Worum es hier geht",
+  introP1:"Der Achtfache Pfad ist die buddhistische Beschreibung von acht Bereichen des Lebens, an denen man üben kann – von der inneren Haltung über das Sprechen und Handeln bis zur Meditation. Dieses Werkzeug ist kein Test und keine Prüfung. Es ist ein ruhiger Spiegel: Du schätzt für jeden der acht Bereiche ein, wie bewusst du ihn derzeit lebst, und hältst in einer Notiz fest, was dir dazu durch den Kopf geht.",
+  introP2:"Der Sinn liegt in der Wiederholung. Ein einzelner Durchgang zeigt eine Momentaufnahme; mehrere über das Jahr verteilt zeigen eine Richtung. Am Jahresende siehst du im Verlauf, wo du gewachsen bist und wo noch Raum liegt – ohne Wertung, als freundliche Standortbestimmung.",
+  howH:"So gehst du vor",
+  how1:"Nimm dir ein paar ruhige Minuten und lies jede der acht Fragen in Ruhe.",
+  how2:"Schätze auf einer Skala von 1 bis 5 ein: 1 = trifft (noch) kaum zu, 5 = lebe ich sehr bewusst und regelmässig.",
+  how3:"Halte in der Notiz kurz fest, warum – das macht den späteren Rückblick wertvoll.",
+  how4:"Wiederhole das alle paar Wochen oder Monate. Der Verlauf entsteht von selbst.",
+  runLabel:"Durchgang",
+  add:"+ Neuer Durchgang",exp:"Sicherung exportieren",imp:"Sicherung laden",
+  del:"Durchgang löschen",pdf:"Als PDF speichern",pdfAll:"Ganzes Jahr als PDF",reset:"Alles zurücksetzen",
+  confirmReset:"Wirklich ALLE Durchgänge löschen und neu beginnen? Das kann nicht rückgängig gemacht werden. Tipp: vorher «Sicherung exportieren».",
+  formH:"Neuer Durchgang",dateL:"Datum",save:"Speichern",cancel:"Abbrechen",
+  notePh:"Notiz (optional)",
+  radarH:"Die acht Glieder auf einen Blick",
+  radarN:"Je weiter aussen, desto bewusster gelebt. So siehst du sofort, wo Gleichgewicht ist und wo noch Raum.",
+  detailH:"Im Einzelnen",
+  detailN:"Deine Einschätzung und Notiz zu jedem Glied. Die Veränderung bezieht sich auf den vorigen Durchgang.",
+  trendH:"Verlauf über die Zeit",
+  trendN:"Sichtbar, sobald mehr als ein Durchgang vorliegt – ideal für den Rückblick am Jahresende.",
+  sumH:"Rückblick",
+  sumN:"Eine ruhige Zusammenfassung deiner bisherigen Durchgänge – für den Blick aufs grosse Ganze.",
+  foot1:"Es geht nicht um Bewertung, sondern um ehrliche, freundliche Standortbestimmung.",
+  foot2:"Der Weg zur Befreiung vom Leiden.",
+  noNote:"keine Notiz",histHint:"→ alle bisherigen Notizen zu diesem Glied ansehen",
+  close:"Schliessen",
+  trendEmpty:"Noch kein Verlauf – trage einen zweiten Durchgang ein, dann erscheint hier die Entwicklung.",
+  trendLbl:"Gesamtdurchschnitt",
+  storageWarn:"Dieser Browser speichert hier nicht dauerhaft (z.&nbsp;B. Vorschau-Fenster). Öffne die Datei direkt im Browser, oder nutze «Sicherung exportieren», um deine Durchgänge zu behalten.",
+  remDays:d=>`Dein letzter Durchgang war vor <em>${d} Tagen</em>. Vielleicht magst du wieder einmal innehalten?`,
+  remWeeks:w=>`Seit deinem letzten Durchgang sind rund <em>${w} Wochen</em> vergangen. Ein guter Moment für eine neue Standortbestimmung.`,
+  needScore:"Bitte für jedes Glied einen Wert 1–5 wählen.",
+  cantDelLast:"Der letzte Durchgang kann nicht gelöscht werden.",
+  confirmDel:d=>`Durchgang vom ${d} löschen?`,
+  badFile:"Diese Datei konnte nicht gelesen werden. Bitte eine zuvor exportierte Sicherung wählen.",
+  sumAvg:a=>`Dein aktueller Gesamtdurchschnitt liegt bei <strong>${a} von 5</strong>. `,
+  sumStrong:s=>`Am bewusstesten lebst du derzeit ${s}`,
+  sumGrow:s=>`; am meisten Raum siehst du bei ${s}.`,
+  sumGrowNone:".",
+  grew:"gewachsen",declined:"etwas zurückgegangen",stable:"stabil geblieben",
+  sumTrend:(n,w)=>`Über ${n} Durchgänge hinweg ist dein Gesamtbild <strong>${w}</strong>`,
+  sumSince:d=>` (${d} seit dem ersten Mal). `,
+  sumStep:(n,d)=>`Den grössten Schritt hast du bei <strong>${n}</strong> gemacht (+${d}). `,
+  sumClose:"Erinnere dich: Es geht nicht um die Zahlen, sondern um die Richtung und deine ehrlichen Notizen dazu.",
+  sumFirst:"Das ist dein erster Durchgang – die eigentliche Kraft dieses Werkzeugs zeigt sich mit der Zeit. Komm in ein paar Wochen wieder, dann erscheint hier dein Verlauf.",
+  yrTitle:"Jahresrückblick",
+  yrCount:n=>`${n} ${n===1?"Durchgang":"Durchgänge"}`,
+  yrPeriod:(a,b)=>`${a} – ${b}`,
+  yrHistoryH:"Notizen über das Jahr",
+  yrNoNote:"(keine Notiz)",
+  and:"und"
+ },
+ en:{
+  title:"The Noble Eightfold Path in Daily Life",
+  sub:"A friendly check-in – 1 = barely true yet · 5 = I live this consciously",
+  ovLabel:"Overall average",
+  introH:"What this is for",
+  introP1:"The Noble Eightfold Path is the Buddhist description of eight areas of life to practise in – from inner outlook through speech and action to meditation. This tool is not a test and not an exam. It is a quiet mirror: for each of the eight areas you estimate how consciously you currently live it, and jot down a note on what comes to mind.",
+  introP2:"The value lies in repetition. A single session is a snapshot; several across the year show a direction. At year's end the trend shows where you have grown and where there is still room – without judgement, as a friendly check-in.",
+  howH:"How to use it",
+  how1:"Take a few quiet minutes and read each of the eight questions calmly.",
+  how2:"Rate on a scale of 1 to 5: 1 = barely true (yet), 5 = I live this very consciously and regularly.",
+  how3:"Note briefly why – that is what makes the later review valuable.",
+  how4:"Repeat every few weeks or months. The trend builds on its own.",
+  runLabel:"Session",
+  add:"+ New session",exp:"Export backup",imp:"Load backup",
+  del:"Delete session",pdf:"Save as PDF",pdfAll:"Whole year as PDF",reset:"Reset everything",
+  confirmReset:"Really delete ALL sessions and start over? This cannot be undone. Tip: export a backup first.",
+  formH:"New session",dateL:"Date",save:"Save",cancel:"Cancel",
+  notePh:"Note (optional)",
+  radarH:"The eight factors at a glance",
+  radarN:"The further out, the more consciously lived. You can see at once where there is balance and where there is still room.",
+  detailH:"In detail",
+  detailN:"Your rating and note for each factor. The change refers to the previous session.",
+  trendH:"Trend over time",
+  trendN:"Shown once more than one session exists – ideal for the year-end review.",
+  sumH:"Review",
+  sumN:"A calm summary of your sessions so far – for the bigger picture.",
+  foot1:"This is not about judgement, but an honest, friendly check-in.",
+  foot2:"The path to liberation from suffering.",
+  noNote:"no note",histHint:"→ view all past notes for this factor",
+  close:"Close",
+  trendEmpty:"No trend yet – add a second session and the development appears here.",
+  trendLbl:"Overall average",
+  storageWarn:"This browser is not storing data permanently here (e.g. a preview pane). Open the file directly in a browser, or use “Export backup” to keep your sessions.",
+  remDays:d=>`Your last session was <em>${d} days</em> ago. Perhaps take a moment to pause again?`,
+  remWeeks:w=>`About <em>${w} weeks</em> have passed since your last session. A good moment for a fresh check-in.`,
+  needScore:"Please choose a value 1–5 for every factor.",
+  cantDelLast:"The last remaining session can't be deleted.",
+  confirmDel:d=>`Delete the session from ${d}?`,
+  badFile:"This file couldn't be read. Please choose a backup you exported earlier.",
+  sumAvg:a=>`Your current overall average is <strong>${a} of 5</strong>. `,
+  sumStrong:s=>`You currently live most consciously in ${s}`,
+  sumGrow:s=>`; the most room to grow is in ${s}.`,
+  sumGrowNone:".",
+  grew:"grown",declined:"declined slightly",stable:"stayed stable",
+  sumTrend:(n,w)=>`Across ${n} sessions your overall picture has <strong>${w}</strong>`,
+  sumSince:d=>` (${d} since the first time). `,
+  sumStep:(n,d)=>`Your biggest step was in <strong>${n}</strong> (+${d}). `,
+  sumClose:"Remember: it is not about the numbers, but about the direction and your honest notes.",
+  sumFirst:"This is your first session – the real power of this tool shows over time. Come back in a few weeks and your trend will appear here.",
+  yrTitle:"Year in review",
+  yrCount:n=>`${n} ${n===1?"session":"sessions"}`,
+  yrPeriod:(a,b)=>`${a} – ${b}`,
+  yrHistoryH:"Notes across the year",
+  yrNoNote:"(no note)",
+  and:"and"
+ }
+};
+const t=k=>T[LANG][k];
+const COL={weisheit:getCS('--weisheit'),ethik:getCS('--ethik'),geist:getCS('--geist')};
+/* Read a CSS custom property (theme colour) from :root. */
+function getCS(v){return getComputedStyle(document.documentElement).getPropertyValue(v).trim()}
+
+// --- Data. Empty starter session: neutral values, no notes. The first real
+//     session you save replaces it automatically; "Reset" returns to it. ---
+const SEED=[{
+  date:new Date().toISOString().slice(0,10),
+  scores:[1,1,1,1,1,1,1,1],
+  notes:["","","","","","","",""]
+}];
+const KEY="achtfacher-pfad-durchgaenge";
+let storageOK=true;
+/* Load sessions from localStorage; fall back to the seed if empty/blocked. */
+function load(){
+  try{const raw=localStorage.getItem(KEY);
+    if(raw){const p=JSON.parse(raw);if(Array.isArray(p)&&p.length)return p;}
+  }catch(e){storageOK=false;}
+  return JSON.parse(JSON.stringify(SEED));
+}
+/* Save all sessions. If the browser blocks storage (e.g. sandboxed preview),
+   flag it and show a non-blocking hint pointing to manual export. */
+function persist(){
+  try{localStorage.setItem(KEY,JSON.stringify(DATA));}
+  catch(e){storageOK=false;showStorageWarn();}
+}
+/* Show a one-time hint when the browser blocks persistent storage. */
+function showStorageWarn(){
+  if(document.getElementById('swarn'))return;
+  const d=document.createElement('div');d.id='swarn';
+  d.style.cssText="background:#f4e7d0;border:1px solid var(--gold);color:#5a4a2a;padding:.7rem 1rem;border-radius:2px;font-size:.85rem;margin-top:1rem";
+  d.innerHTML=t("storageWarn");
+  document.querySelector('.controls').after(d);
+}
+let DATA=load();
+let current=DATA.length-1, radarCh, trendCh, draft=null;
+
+const fmtDate=d=>{const [y,m,da]=d.split("-");return `${da}.${m}.${y}`};
+const avg=a=>a.reduce((x,y)=>x+y,0)/a.length;
+
+/* Repaint everything for the currently selected session. */
+function render(){
+  const runsel=document.getElementById('runsel');
+  runsel.innerHTML=DATA.map((d,i)=>`<option value="${i}">${fmtDate(d.date)}</option>`).join('');
+  runsel.value=current;
+  const d=DATA[current];
+  document.getElementById('ovNum').textContent=avg(d.scores).toFixed(1);
+  document.getElementById('ovDate').textContent="· "+fmtDate(d.date);
+  renderGlieder(d);
+  try{renderRadar();renderTrend();}catch(e){/* charts need Chart.js; keep the rest working */}
+  renderReminder();
+  renderSummary();
+}
+
+/* Detail list: one row per factor, with the change vs the previous session. */
+function renderGlieder(d){
+  const prev = current>0?DATA[current-1]:null;
+  let html="", lastG="";
+  GLIEDER.forEach((gl,i)=>{
+    const grp=gGroup(gl);
+    if(grp!==lastG){html+=`<div class="grouplabel">${grp}</div>`;lastG=grp;}
+    const s=d.scores[i], col=COL[gl.c];
+    let delta="";
+    if(prev){const diff=s-prev.scores[i];
+      if(diff>0)delta=`<span class="g-delta up">▲ +${diff}</span>`;
+      else if(diff<0)delta=`<span class="g-delta down">▼ ${diff}</span>`;
+      else delta=`<span class="g-delta same">– ${LANG==="de"?"gleich":"same"}</span>`;}
+    html+=`<div class="glied" data-idx="${i}">
+      <div class="g-score" style="background:${col}">${s}</div>
+      <div class="g-body">
+        <div class="g-name">${gName(gl)}<span class="g-pali">${gl.p}</span>${delta}</div>
+        <div class="g-question">${gQ(gl)}</div>
+        <div class="g-bar"><span style="width:${s/5*100}%;background:${col}"></span></div>
+        <div class="g-note">${d.notes[i]||"<em>"+t('noNote')+"</em>"}</div>
+        <div class="g-hint">${t('histHint')}</div>
+      </div></div>`;
+  });
+  document.getElementById('glieder').innerHTML=html;
+  document.querySelectorAll('#glieder .glied').forEach(el=>{
+    el.onclick=()=>openHistory(+el.dataset.idx);
+  });
+}
+
+/* Radar chart: the eight scores of the selected session (0–5 axis). */
+function renderRadar(){
+  const d=DATA[current];
+  const ctx=document.getElementById('radar');
+  if(radarCh)radarCh.destroy();
+  // On narrow screens, long axis labels get clipped — use short ones and
+  // smaller type so every label fits inside the canvas.
+  const narrow = window.innerWidth < 560;
+  const labels = GLIEDER.map(g=>{
+    const full = gPlain(g);            // e.g. "Rechte Ansicht" / "Right View"
+    if(!narrow) return full;
+    return full.replace(/^Rechter?\s|^Rechtes\s|^Right\s/,''); // -> "Ansicht" / "View"
+  });
+  radarCh=new Chart(ctx,{type:'radar',
+    data:{labels,
+      datasets:[{data:d.scores,label:fmtDate(d.date),
+        fill:true,backgroundColor:'rgba(168,137,78,.18)',
+        borderColor:getCS('--gold'),borderWidth:2,
+        pointBackgroundColor:GLIEDER.map(g=>COL[g.c]),pointRadius:narrow?3:4}]},
+    options:{plugins:{legend:{display:false}},
+      layout:{padding:narrow?2:0},
+      scales:{r:{min:0,max:5,ticks:{stepSize:1,backdropColor:'transparent',color:'#8a887e'},
+        grid:{color:'#cfc9b8'},angleLines:{color:'#cfc9b8'},
+        pointLabels:{font:{family:'Georgia',size:narrow?9:11},color:'#2b2b28'}}}}});
+}
+
+/* Trend chart: overall average per session. Hidden until 2+ sessions exist. */
+function renderTrend(){
+  const sec=document.getElementById('trendSec');
+  const ctx=document.getElementById('trend');
+  if(trendCh)trendCh.destroy();
+  if(DATA.length<2){
+    sec.querySelector('.chart-box').innerHTML='<div class="empty">'+t('trendEmpty')+'</div>';
+    return;
+  }
+  sec.querySelector('.chart-box').innerHTML='<canvas id="trend"></canvas>';
+  trendCh=new Chart(document.getElementById('trend'),{type:'line',
+    data:{labels:DATA.map(d=>fmtDate(d.date)),
+      datasets:[{label:t('trendLbl'),data:DATA.map(d=>+avg(d.scores).toFixed(2)),
+        borderColor:getCS('--gold'),backgroundColor:'rgba(168,137,78,.12)',
+        borderWidth:2.5,fill:true,tension:.3,pointRadius:5,pointBackgroundColor:getCS('--gold')}]},
+    options:{plugins:{legend:{display:false}},
+      scales:{y:{min:1,max:5,ticks:{stepSize:1,color:'#8a887e'},grid:{color:'#cfc9b8'}},
+        x:{ticks:{color:'#8a887e'},grid:{display:false}}}}});
+}
+
+// --- New session: build the entry form, collect scores + notes into `draft`. ---
+function openForm(){
+  draft={scores:Array(8).fill(null),notes:Array(8).fill("")};
+  document.getElementById('fdate').value=new Date().toISOString().slice(0,10);
+  let html="",lastG="";
+  GLIEDER.forEach((gl,i)=>{
+    const grp=gGroup(gl);
+    if(grp!==lastG){html+=`<div class="grouplabel">${grp}</div>`;lastG=grp;}
+    html+=`<div class="frow"><label>${gName(gl)}<span class="fp"> ${gl.p}</span></label>
+      <div class="fq">${gQ(gl)}</div>
+      <div class="scale" data-i="${i}">${[1,2,3,4,5].map(v=>`<button data-v="${v}">${v}</button>`).join('')}</div>
+      <textarea placeholder="${t('notePh')}" data-note="${i}"></textarea></div>`;
+  });
+  document.getElementById('fquestions').innerHTML=html;
+  document.querySelectorAll('.scale button').forEach(b=>b.onclick=()=>{
+    const wrap=b.parentElement,i=+wrap.dataset.i;
+    wrap.querySelectorAll('button').forEach(x=>x.classList.remove('sel'));
+    b.classList.add('sel');draft.scores[i]=+b.dataset.v;});
+  document.querySelectorAll('[data-note]').forEach(t=>t.oninput=()=>draft.notes[+t.dataset.note]=t.value);
+  document.getElementById('form').classList.add('open');
+  document.getElementById('form').scrollIntoView({behavior:'smooth'});
+}
+/* True while the data is still just the untouched empty starter session. */
+function isStarterOnly(){
+  return DATA.length===1 && DATA[0].scores.every(s=>s===1)
+      && DATA[0].notes.every(n=>n==="");
+}
+/* Validate the entry form, save the session (replacing the empty starter on
+   the first real entry), persist and re-render. */
+function saveForm(){
+  if(draft.scores.includes(null)){alert(t("needScore"));return;}
+  if(isStarterOnly()) DATA=[];
+  DATA.push({date:document.getElementById('fdate').value,scores:[...draft.scores],notes:[...draft.notes]});
+  DATA.sort((a,b)=>a.date.localeCompare(b.date));
+  current=DATA.findIndex(d=>d.date===document.getElementById('fdate').value);
+  document.getElementById('form').classList.remove('open');
+  persist();render();
+}
+/* Export all sessions as a JSON backup file. */
+function exportData(){
+  const blob=new Blob([JSON.stringify(DATA,null,2)],{type:'application/json'});
+  const a=document.createElement('a');a.href=URL.createObjectURL(blob);
+  a.download='achtfacher-pfad-daten.json';a.click();
+}
+
+/* Import a previously exported JSON backup, replacing current data. */
+function importData(file){
+  const r=new FileReader();
+  r.onload=()=>{
+    try{const p=JSON.parse(r.result);
+      if(!Array.isArray(p)||!p.length||!p[0].scores)throw 0;
+      DATA=p;DATA.sort((a,b)=>a.date.localeCompare(b.date));
+      current=DATA.length-1;persist();render();
+    }catch(e){alert(t("badFile"));}
+  };
+  r.readAsText(file);
+}
+/* Delete the selected session (never the last remaining one). */
+function delRun(){
+  if(DATA.length<=1){alert(t("cantDelLast"));return;}
+  if(!confirm(t("confirmDel")(fmtDate(DATA[current].date))))return;
+  DATA.splice(current,1);current=Math.max(0,current-1);persist();render();
+}
+
+/* Gentle reminder: how long since the most recent session. No nagging. */
+function renderReminder(){
+  const el=document.getElementById('reminder');
+  const last=DATA[DATA.length-1].date;
+  const days=Math.floor((Date.now()-new Date(last).getTime())/864e5);
+  if(days<14){el.style.display="none";return;}
+  el.innerHTML = days<31 ? t('remDays')(days) : t('remWeeks')(Math.floor(days/7));
+  el.style.display="block";
+}
+
+/* Note history: every past note for one factor, newest first. */
+function openHistory(idx){
+  const gl=GLIEDER[idx];
+  document.getElementById('mTitle').textContent=gName(gl);
+  document.getElementById('mPali').textContent=gl.p;
+  document.getElementById('mQ').textContent=gQ(gl);
+  const rows=DATA.map((d,di)=>({date:d.date,score:d.scores[idx],note:d.notes[idx],di}))
+                 .sort((a,b)=>b.date.localeCompare(a.date));
+  document.getElementById('mHist').innerHTML=rows.map(r=>`
+    <div class="hist">
+      <div class="hist-date">${fmtDate(r.date)}</div>
+      <div class="hist-score" style="background:${COL[gl.c]}">${r.score}</div>
+      <div class="hist-note">${r.note?r.note:"<em>"+t('noNote')+"</em>"}</div>
+    </div>`).join('');
+  document.getElementById('overlay').classList.add('open');
+}
+/* Close the note-history dialog. */
+function closeHistory(){document.getElementById('overlay').classList.remove('open');}
+
+/* Rule-based year-end reflection. Works fully offline; no AI, no network. */
+function renderSummary(){
+  const box=document.getElementById('summary');
+  const n=DATA.length;
+  const latest=DATA[n-1];
+  const gAvg=avg(latest.scores).toFixed(1);
+  const idx=[...latest.scores.keys()];
+  const maxS=Math.max(...latest.scores), minS=Math.min(...latest.scores);
+  const strong=idx.filter(i=>latest.scores[i]===maxS).map(i=>gPlain(GLIEDER[i]));
+  const grow=idx.filter(i=>latest.scores[i]===minS).map(i=>gPlain(GLIEDER[i]));
+  let p1=t('sumAvg')(gAvg)+t('sumStrong')(list(strong));
+  p1+= maxS>minS ? t('sumGrow')(list(grow)) : t('sumGrowNone');
+
+  let p2="";
+  if(n>=2){
+    const first=DATA[0];
+    const dTotal=(avg(latest.scores)-avg(first.scores));
+    let bestI=0,bestD=-9;
+    idx.forEach(i=>{const dd=latest.scores[i]-first.scores[i];if(dd>bestD){bestD=dd;bestI=i;}});
+    const word=dTotal>0.05?t('grew'):dTotal<-0.05?t('declined'):t('stable');
+    p2=t('sumTrend')(n,word);
+    p2+= dTotal!==0 ? t('sumSince')((dTotal>0?"+":"")+dTotal.toFixed(1)) : ". ";
+    if(bestD>0) p2+=t('sumStep')(gPlain(GLIEDER[bestI]),bestD);
+    p2+=t('sumClose');
+  } else {
+    p2=t('sumFirst');
+  }
+  box.innerHTML=`<p>${p1}</p><p>${p2}</p>`;
+}
+/* Join factor names into a natural language list ("A, B und C"). */
+function list(a){
+  const AND=t('and');
+  if(a.length===1)return `<strong>${a[0]}</strong>`;
+  if(a.length===2)return `<strong>${a[0]}</strong> ${AND} <strong>${a[1]}</strong>`;
+  return a.slice(0,-1).map(x=>`<strong>${x}</strong>`).join(", ")+` ${AND} <strong>${a[a.length-1]}</strong>`;
+}
+
+/* ---- PDF report -------------------------------------------------------------
+   Builds a laid-out, multi-section A4 report with jsPDF and embeds the charts
+   as images taken straight from their <canvas>, so they appear even offline.
+   Falls back to the browser print dialog if jsPDF isn't available. ---------- */
+
+// Palette in RGB for jsPDF (mirrors the CSS custom properties)
+const PDF_COL={
+  ink:[43,43,40], soft:[107,106,98], gold:[168,137,78],
+  line:[207,201,184], paper2:[233,229,216],
+  weisheit:[106,127,109], ethik:[138,109,90], geist:[95,112,138]
+};
+const stripTags=s=>s.replace(/<[^>]+>/g,"");
+
+/* jsPDF's built-in Times font lacks Pali diacritics (ā ṭ ṅ ṃ …), which would
+   drop out or corrupt. For PDF text only, fold them to readable ASCII so the
+   Pali stays legible ("Sammā diṭṭhi" -> "Samma ditthi"). Screen text keeps the
+   proper diacritics; this transliteration is applied only when drawing to PDF. */
+const PALI_MAP={ā:'a','ī':'i','ū':'u','ṁ':'m','ṃ':'m','ṅ':'n','ñ':'n',
+  'ṭ':'t','ḍ':'d','ṇ':'n','ḷ':'l','ṛ':'r','ś':'s','ṣ':'s','ḥ':'h','Ā':'A','Ṭ':'T'};
+const pdfText=s=>String(s).replace(/[āīūṁṃṅñṭḍṇḷṛśṣḥĀṬ]/g,c=>PALI_MAP[c]||c);
+
+/* Chart canvases are transparent; on white PDF that turns dark. Copy the
+   canvas onto an opaque white canvas first, then hand that to jsPDF. */
+function canvasOnWhite(cv){
+  const tmp=document.createElement('canvas');
+  tmp.width=cv.width; tmp.height=cv.height;
+  const cx=tmp.getContext('2d');
+  cx.fillStyle='#ffffff'; cx.fillRect(0,0,tmp.width,tmp.height);
+  cx.drawImage(cv,0,0);
+  return tmp.toDataURL('image/png',1.0);
+}
+
+/* Plain-text version of the review (renderSummary builds HTML; we reuse logic). */
+function summaryText(){
+  const box=document.getElementById('summary');
+  return [...box.querySelectorAll('p')].map(p=>p.textContent);
+}
+
+/* Build and download a laid-out PDF report of the SELECTED session
+   (title page, radar, all factors with notes, trend, review). See notes on
+   the PDF approach above canvasOnWhite/pdfText. */
+function printPDF(){
+  const JS = window.jspdf && window.jspdf.jsPDF;
+  if(!JS){ window.print(); return; }               // graceful fallback
+
+  const doc = new JS({unit:"mm", format:"a4"});
+  const W = 210, H = 297, M = 20;                   // page + margin (mm)
+  let y = M;
+  const d = DATA[current];
+  const enTitle = LANG==="de" ? "Der Achtfache Pfad im Alltag" : "The Noble Eightfold Path in Daily Life";
+
+  const setColor=(c)=>doc.setTextColor(c[0],c[1],c[2]);
+  const setDraw=(c)=>doc.setDrawColor(c[0],c[1],c[2]);
+  const setFill=(c)=>doc.setFillColor(c[0],c[1],c[2]);
+
+  // page-break helper: start a fresh page if the next block won't fit
+  // page-break helper: start a new page if the next block would overflow
+  function need(h){ if(y+h > H-M){ doc.addPage(); y=M; } }
+
+  // --- Title block with the eight-spoke wheel ------------------------------
+  drawWheel(doc, W/2, y+8, 11);
+  y += 33;
+  doc.setFont("times","normal"); doc.setFontSize(24); setColor(PDF_COL.ink);
+  doc.text(pdfText(enTitle), W/2, y, {align:"center"}); y += 9;
+  doc.setFont("times","italic"); doc.setFontSize(12); setColor(PDF_COL.gold);
+  doc.text(pdfText("Ariya Aṭṭhaṅgika Magga"), W/2, y, {align:"center"}); y += 10;
+  doc.setFont("times","normal"); doc.setFontSize(11); setColor(PDF_COL.soft);
+  doc.text(pdfText(`${t('ovLabel')}: ${avg(d.scores).toFixed(1)} / 5  ·  ${fmtDate(d.date)}`), W/2, y, {align:"center"});
+  y += 6;
+  setDraw(PDF_COL.line); doc.setLineWidth(0.3); doc.line(M, y, W-M, y); y += 10;
+
+  // --- Radar chart (image from canvas) -------------------------------------
+  const radarImg = document.getElementById('radar');
+  if(radarImg && radarImg.toDataURL){
+    const iw = 110, ih = 110, ix = (W-iw)/2;
+    need(ih+8);
+    doc.addImage(canvasOnWhite(radarImg), 'PNG', ix, y, iw, ih);
+    y += ih + 8;
+  }
+
+  // --- Eight factors: score, question, note --------------------------------
+  need(12);
+  doc.setFont("times","normal"); doc.setFontSize(14); setColor(PDF_COL.ink);
+  doc.text(pdfText(t('detailH')), M, y); y += 7;
+
+  let lastG="";
+  GLIEDER.forEach((gl,i)=>{
+    const grp=gGroup(gl);
+    const q = gQ(gl), note = d.notes[i] || t('noNote');
+    const qLines = doc.splitTextToSize(pdfText(q), W-2*M-14);
+    const nLines = doc.splitTextToSize(pdfText(note), W-2*M-14);
+    const blockH = 8 + qLines.length*4.4 + nLines.length*4.4 + 6;
+
+    if(grp!==lastG){ need(10); doc.setFont("times","bold"); doc.setFontSize(8);
+      setColor(PDF_COL.soft); doc.text(pdfText(grp.toUpperCase()), M, y); y+=5; lastG=grp; }
+
+    need(blockH);
+    // score disc
+    const c = PDF_COL[gl.c];
+    setFill(c); doc.circle(M+4, y+1, 4, 'F');
+    doc.setFont("times","bold"); doc.setFontSize(11); setColor([255,255,255]);
+    doc.text(String(d.scores[i]), M+4, y+2.6, {align:"center"});
+    // name + pali
+    doc.setFont("times","bold"); doc.setFontSize(11); setColor(PDF_COL.ink);
+    doc.text(pdfText(gName(gl)), M+12, y+1);
+    const nameW = doc.getTextWidth(pdfText(gName(gl)));
+    doc.setFont("times","italic"); doc.setFontSize(9); setColor(PDF_COL.gold);
+    doc.text(pdfText(gl.p), M+12+nameW+3, y+1);
+    y += 6;
+    // question
+    doc.setFont("times","italic"); doc.setFontSize(9.5); setColor(PDF_COL.soft);
+    doc.text(qLines, M+12, y); y += qLines.length*4.4 + 1;
+    // note
+    doc.setFont("times","normal"); doc.setFontSize(10); setColor(PDF_COL.ink);
+    doc.text(nLines, M+12, y); y += nLines.length*4.4 + 6;
+  });
+
+  // --- Trend chart (only if it exists) -------------------------------------
+  const trendImg = document.getElementById('trend');
+  if(DATA.length>=2 && trendImg && trendImg.toDataURL){
+    need(80);
+    doc.setFont("times","normal"); doc.setFontSize(14); setColor(PDF_COL.ink);
+    doc.text(pdfText(t('trendH')), M, y); y += 6;
+    const iw = W-2*M, ih = iw*0.42;
+    doc.addImage(canvasOnWhite(trendImg), 'PNG', M, y, iw, ih);
+    y += ih + 8;
+  }
+
+  // --- Review (plain text) --------------------------------------------------
+  const paras = summaryText();
+  if(paras.length){
+    need(16);
+    doc.setFont("times","normal"); doc.setFontSize(14); setColor(PDF_COL.ink);
+    doc.text(pdfText(t('sumH')), M, y); y += 6;
+    // subtle box
+    doc.setFont("times","normal"); doc.setFontSize(10.5); setColor(PDF_COL.ink);
+    paras.forEach(p=>{
+      const lines = doc.splitTextToSize(pdfText(p), W-2*M-6);
+      need(lines.length*5 + 4);
+      setFill(PDF_COL.paper2); setDraw(PDF_COL.gold); doc.setLineWidth(0.5);
+      const boxH = lines.length*5 + 4;
+      doc.rect(M, y-3, W-2*M, boxH, 'S');
+      doc.text(lines, M+4, y+1); y += boxH + 4;
+    });
+  }
+
+  // --- Footer on every page -------------------------------------------------
+  const pages = doc.getNumberOfPages();
+  for(let p=1;p<=pages;p++){
+    doc.setPage(p);
+    doc.setFont("times","italic"); doc.setFontSize(8); setColor(PDF_COL.soft);
+    doc.text(pdfText(t('foot2')), W/2, H-10, {align:"center"});
+    doc.text(`${p} / ${pages}`, W-M, H-10, {align:"right"});
+  }
+
+  doc.save(`achtfacher-pfad-${d.date}.pdf`);
+}
+
+/* Draw the eight-spoke wheel directly into the PDF (vector, crisp at any size). */
+function drawWheel(doc, cx, cy, r){
+  doc.setDrawColor(PDF_COL.gold[0],PDF_COL.gold[1],PDF_COL.gold[2]);
+  doc.setLineWidth(0.4);
+  doc.circle(cx, cy, r, 'S');
+  doc.circle(cx, cy, r*0.85, 'S');
+  doc.circle(cx, cy, r*0.19, 'S');
+  for(let k=0;k<8;k++){
+    const a=k*45*Math.PI/180;
+    doc.line(cx+Math.cos(a)*r*0.19, cy+Math.sin(a)*r*0.19,
+             cx+Math.cos(a)*r*0.85, cy+Math.sin(a)*r*0.85);
+  }
+}
+
+/* ---- Whole-year PDF ---------------------------------------------------------
+   An archive of the full year: an overview page (wheel, period, trend chart,
+   review) followed by every factor's complete note history across all sessions.
+   Reuses the same colours, transliteration and canvas-to-image approach. ----- */
+function printYearPDF(){
+  const JS = window.jspdf && window.jspdf.jsPDF;
+  if(!JS){ window.print(); return; }
+
+  const doc = new JS({unit:"mm", format:"a4"});
+  const W=210, H=297, M=20; let y=M;
+  const setColor=c=>doc.setTextColor(c[0],c[1],c[2]);
+  const setDraw=c=>doc.setDrawColor(c[0],c[1],c[2]);
+  const setFill=c=>doc.setFillColor(c[0],c[1],c[2]);
+  // page-break helper: start a new page if the next block would overflow
+  function need(h){ if(y+h > H-M){ doc.addPage(); y=M; } }
+
+  const sorted=[...DATA].sort((a,b)=>a.date.localeCompare(b.date));
+  const first=sorted[0].date, last=sorted[sorted.length-1].date;
+  const enTitle = LANG==="de" ? "Der Achtfache Pfad im Alltag" : "The Noble Eightfold Path in Daily Life";
+
+  // --- Overview page -------------------------------------------------------
+  drawWheel(doc, W/2, y+8, 11); y+=33;
+  doc.setFont("times","normal"); doc.setFontSize(22); setColor(PDF_COL.ink);
+  doc.text(pdfText(enTitle), W/2, y, {align:"center"}); y+=8;
+  doc.setFont("times","bold"); doc.setFontSize(13); setColor(PDF_COL.gold);
+  doc.text(pdfText(t('yrTitle')), W/2, y, {align:"center"}); y+=7;
+  doc.setFont("times","normal"); doc.setFontSize(11); setColor(PDF_COL.soft);
+  // period reads as one date when there is only one session; count is singular-aware
+  const period = first===last ? fmtDate(first) : t('yrPeriod')(fmtDate(first),fmtDate(last));
+  doc.text(pdfText(period+"  ·  "+t('yrCount')(sorted.length)), W/2, y, {align:"center"}); y+=6;
+  setDraw(PDF_COL.line); doc.setLineWidth(0.3); doc.line(M,y,W-M,y); y+=10;
+
+  // radar of the latest session — always shown, so a single session isn't empty
+  const radarImg=document.getElementById('radar');
+  if(radarImg && radarImg.toDataURL){
+    const iw=104, ih=104, ix=(W-iw)/2;
+    doc.addImage(canvasOnWhite(radarImg),'PNG',ix,y,iw,ih); y+=ih+8;
+  }
+
+  // trend chart only makes sense with 2+ sessions
+  const trendImg=document.getElementById('trend');
+  if(sorted.length>=2 && trendImg && trendImg.toDataURL){
+    need(80);
+    doc.setFont("times","normal"); doc.setFontSize(14); setColor(PDF_COL.ink);
+    doc.text(pdfText(t('trendH')), M, y); y+=6;
+    const iw=W-2*M, ih=iw*0.42;
+    doc.addImage(canvasOnWhite(trendImg),'PNG',M,y,iw,ih); y+=ih+10;
+  }
+
+  // review text
+  const paras=summaryText();
+  if(paras.length){
+    need(16);
+    doc.setFont("times","normal"); doc.setFontSize(14); setColor(PDF_COL.ink);
+    doc.text(pdfText(t('sumH')), M, y); y+=6;
+    doc.setFontSize(10.5);
+    paras.forEach(p=>{
+      const lines=doc.splitTextToSize(pdfText(p), W-2*M-6);
+      const boxH=lines.length*5+4; need(boxH);
+      setFill(PDF_COL.paper2); setDraw(PDF_COL.gold); doc.setLineWidth(0.5);
+      doc.rect(M,y-3,W-2*M,boxH,'S');
+      setColor(PDF_COL.ink); doc.text(lines,M+4,y+1); y+=boxH+4;
+    });
+  }
+
+  // --- Per-factor note history --------------------------------------------
+  doc.addPage(); y=M;
+  doc.setFont("times","normal"); doc.setFontSize(16); setColor(PDF_COL.ink);
+  doc.text(pdfText(t('yrHistoryH')), M, y); y+=10;
+
+  GLIEDER.forEach((gl,i)=>{
+    const c=PDF_COL[gl.c];
+    need(16);
+    // factor heading with pali
+    doc.setFont("times","bold"); doc.setFontSize(12); setColor(PDF_COL.ink);
+    doc.text(pdfText(gName(gl)), M, y);
+    const nameW=doc.getTextWidth(pdfText(gName(gl)));
+    doc.setFont("times","italic"); doc.setFontSize(9); setColor(PDF_COL.gold);
+    doc.text(pdfText(gl.p), M+nameW+3, y);
+    y+=6;
+    // each session's score + note, chronological
+    sorted.forEach(d=>{
+      const idx=DATA.indexOf(d); // scores align by factor index i
+      const score=d.scores[i];
+      const note=d.notes[i]||t('yrNoNote');
+      const nLines=doc.splitTextToSize(pdfText(note), W-M-40);
+      const rowH=Math.max(7, nLines.length*4.4+2);
+      need(rowH+1);
+      // date
+      doc.setFont("times","normal"); doc.setFontSize(9); setColor(PDF_COL.soft);
+      doc.text(fmtDate(d.date), M, y+3);
+      // score disc
+      setFill(c); doc.circle(M+26, y+2, 3, 'F');
+      doc.setFont("times","bold"); doc.setFontSize(8.5); setColor([255,255,255]);
+      doc.text(String(score), M+26, y+3.2, {align:"center"});
+      // note
+      doc.setFont("times","normal"); doc.setFontSize(9.5); setColor(PDF_COL.ink);
+      doc.text(nLines, M+34, y+3);
+      y+=rowH;
+    });
+    y+=5;
+    setDraw(PDF_COL.line); doc.setLineWidth(0.2); need(2); doc.line(M,y,W-M,y); y+=6;
+  });
+
+  // footer on every page
+  const pages=doc.getNumberOfPages();
+  for(let p=1;p<=pages;p++){
+    doc.setPage(p);
+    doc.setFont("times","italic"); doc.setFontSize(8); setColor(PDF_COL.soft);
+    doc.text(pdfText(t('foot2')), W/2, H-10, {align:"center"});
+    doc.text(`${p} / ${pages}`, W-M, H-10, {align:"right"});
+  }
+  doc.save(`achtfacher-pfad-jahr-${last}.pdf`);
+}
+
+document.getElementById('runsel').onchange=e=>{current=+e.target.value;render();};
+document.getElementById('addBtn').onclick=openForm;
+document.getElementById('saveBtn').onclick=saveForm;
+document.getElementById('cancelBtn').onclick=()=>document.getElementById('form').classList.remove('open');
+document.getElementById('exportBtn').onclick=exportData;
+document.getElementById('importBtn').onclick=()=>document.getElementById('importFile').click();
+document.getElementById('importFile').onchange=e=>{if(e.target.files[0])importData(e.target.files[0]);e.target.value='';};
+document.getElementById('delBtn').onclick=delRun;
+document.getElementById('printBtn').onclick=printPDF;
+document.getElementById('printAllBtn').onclick=printYearPDF;
+/* Full reset: clear stored sessions and return to the empty starter. */
+function resetAll(){
+  if(!confirm(t('confirmReset')))return;
+  try{localStorage.removeItem(KEY);}catch(e){}
+  DATA=JSON.parse(JSON.stringify(SEED));
+  current=DATA.length-1;
+  persist();render();
+}
+document.getElementById('resetBtn').onclick=resetAll;
+document.getElementById('mClose').onclick=closeHistory;
+document.getElementById('overlay').onclick=e=>{if(e.target.id==='overlay')closeHistory();};
+document.addEventListener('keydown',e=>{if(e.key==='Escape')closeHistory();});
+if(!storageOK)showStorageWarn();
+
+/* Swap every fixed UI string to the active language, then re-render dynamic
+   parts (charts, detail list, summary). User notes are never touched. */
+function applyLang(lang){
+  LANG=lang;
+  document.documentElement.lang=lang;
+  document.querySelectorAll('[data-i18n]').forEach(el=>{el.innerHTML=t(el.dataset.i18n);});
+  document.getElementById('mClose').textContent=t('close');
+  document.querySelectorAll('#langsw button').forEach(b=>
+    b.classList.toggle('active',b.dataset.lang===lang));
+  const warn=document.getElementById('swarn');if(warn)warn.innerHTML=t('storageWarn');
+  render();
+}
+document.querySelectorAll('#langsw button').forEach(b=>
+  b.onclick=()=>applyLang(b.dataset.lang));
+
+// Draw exactly eight evenly spaced spokes (hub r=9 to inner rim r=40)
+(function drawSpokes(){
+  const g=document.getElementById('spokes');if(!g)return;
+  for(let k=0;k<8;k++){
+    const a=(k*45)*Math.PI/180, ci=Math.cos(a), si=Math.sin(a);
+    const l=document.createElementNS("http://www.w3.org/2000/svg","line");
+    l.setAttribute("x1",(50+9*ci).toFixed(2));l.setAttribute("y1",(50+9*si).toFixed(2));
+    l.setAttribute("x2",(50+40*ci).toFixed(2));l.setAttribute("y2",(50+40*si).toFixed(2));
+    g.appendChild(l);
+  }
+})();
+
+render();
+
+/* Re-render the radar when crossing the narrow/wide threshold (rotation,
+   window resize) so its labels switch between short and full form. */
+let __wasNarrow = window.innerWidth < 560;
+let __rzT;
+window.addEventListener('resize',()=>{
+  clearTimeout(__rzT);
+  __rzT=setTimeout(()=>{
+    const now = window.innerWidth < 560;
+    if(now!==__wasNarrow){ __wasNarrow=now; try{renderRadar();}catch(e){} }
+  },200);
+});
+</script>
+</body>
+</html>
