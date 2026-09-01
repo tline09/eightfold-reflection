@@ -54,8 +54,10 @@ your notes and the change since last time, and a trend chart across sessions.
   available.
 - **Local, private storage** — sessions are saved in your browser via
   `localStorage`. No server, no account, no tracking; nothing leaves your device.
-- **Export / import** your data as a JSON backup, to keep it safe or move it to
-  another browser or device.
+- **Export / import** your data as a JSON backup. Export saves *all* sessions
+  (every date, score and note) to a single file; import restores them on another
+  browser or device. Import **replaces** the current data rather than merging,
+  so it restores exactly the sessions in the file.
 - **Reset everything** — one button clears all stored sessions and returns to
   the empty starter (with a confirmation prompt), for a clean handover.
 - **Single file, no build step.** The only external dependency is Chart.js from
@@ -81,6 +83,13 @@ is opened. If you open the file from a sandboxed preview pane (rather than
 directly in a browser), the browser may block storage; the dashboard detects
 this and shows a hint pointing you to the export button. Opening the file
 directly in a normal browser resolves it.
+
+Because the data lives in the browser, it can be lost if you clear your
+browser's site data or use private/incognito mode, and it does not sync between
+devices. Export a backup now and then — especially after adding a session, and
+at year's end — and keep the file somewhere safe. Your data is never uploaded
+anywhere; a shared or published copy of the tool always starts empty, so your
+own reflections stay private.
 
 ## Deploying on GitHub Pages
 
